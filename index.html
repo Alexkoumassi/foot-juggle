@@ -56,7 +56,8 @@
     <ol id="how">
       <li>Stand up and hold the phone at chest height.</li>
       <li>Point the back camera down at your feet.</li>
-      <li>Move your foot under the ring and kick as the ball lands.</li>
+      <li>During the countdown, wiggle your kicking foot so the ring moves to it.</li>
+      <li>Kick through the ring when it turns green.</li>
     </ol>
     <button id="go">Start</button>
     <div id="note"></div>
@@ -86,15 +87,15 @@
   var elDbg = document.getElementById('dbg');
 
   // ---------- tuning ----------
-  var G = 10;                 // gravity (height units / s^2)
-  var KICK_Z = 0.6;           // ball can be kicked once it falls below this height
-  var GRACE_MS = 110;         // forgiveness after the ball touches the ground
-  var PIXEL_DIFF = 24;        // brightness change that counts as "moved"
-  var BG_FACTOR = 1.4;        // how strongly whole-picture motion (phone shake) is discounted
+  var G = 4.2;                // gravity (height units / s^2) - lower = slower ball
+  var KICK_Z = 0.95;          // ball can be kicked once it falls below this height
+  var GRACE_MS = 280;         // forgiveness after the ball touches the ground
+  var PIXEL_DIFF = 18;        // brightness change that counts as "moved"
+  var BG_FACTOR = 1.0;        // how strongly whole-picture motion (phone shake) is discounted
   var SENS = [
-    { name: 'Low', t: 0.30 },
-    { name: 'Med', t: 0.18 },
-    { name: 'High', t: 0.10 }
+    { name: 'Low', t: 0.22 },
+    { name: 'Med', t: 0.12 },
+    { name: 'High', t: 0.06 }
   ];
   var sensIdx = 1;
   var debug = false;
@@ -108,6 +109,7 @@
   var ball = { x: 0, y: 0, z: 2, vx: 0, vy: 0, vz: 0, spin: 0, groundT: 0 };
   var lastKickT = 0, flash = 0, lastT = 0, lastProcT = 0, countEnd = 0;
   var audio = null;
+  var home = { x: 0, y: 0 };   // where the feet are; the ball keeps coming back here
 
   try { best = parseInt(localStorage.getItem('footjuggle_best') || '0', 10) || 0; } catch (e) {}
   elBest.textContent = 'Best: ' + best;
@@ -118,7 +120,8 @@
     DPR = Math.min(2, window.devicePixelRatio || 1);
     canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    r0 = Math.min(W, H) * 0.095;
+    r0 = Math.min(W, H) * 0.13;
+    home.x = W / 2; home.y = H * 0.72;
     gw = 72; gh = Math.max(24, Math.round(gw * H / W));
     proc.width = gw; proc.height = gh;
     prev = new Uint8Array(gw * gh);
@@ -163,7 +166,7 @@
   // ---------- motion detection ----------
   function processMotion(dt) {
     var d = pctx.getImageData(0, 0, gw, gh).data;
-    var decay = Math.pow(0.5, dt / 0.12);
+    var decay = Math.pow(0.5, dt / 0.2);
     var n = gw * gh;
     for (var i = 0, j = 0; i < n; i++, j += 4) {
       var gray = (d[j] + d[j + 1] + d[j + 2]) / 3 | 0;
@@ -178,7 +181,7 @@
   // How much is moving around the ball's landing spot, compared with the rest of the picture.
   function regionMotion() {
     var cxg = ball.x / W * gw, cyg = ball.y / H * gh;
-    var rg = r0 * 1.45 / W * gw, r2 = rg * rg;
+    var rg = r0 * 1.9 / W * gw, r2 = rg * rg;
     var inSum = 0, inN = 0, outSum = 0, outN = 0, mx = 0, my = 0;
     for (var y = 0; y < gh; y++) {
       var dy = y + 0.5 - cyg;
@@ -215,8 +218,21 @@
   function rnd(a) { return (Math.random() * 2 - 1) * a; }
   function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
+  // During the countdown: find where the moving foot is and park the ball there.
+  function findFoot() {
+    var sum = 0, mx = 0, my = 0, n = gw * gh;
+    for (var y = 0; y < gh; y++) for (var x = 0; x < gw; x++) {
+      var h = heat[y * gw + x]; sum += h; mx += h * x; my += h * y;
+    }
+    var mean = sum / n;
+    if (mean < 0.015 || mean > 0.45) return;      // nothing moving, or the whole phone is moving
+    var fx = (mx / sum + 0.5) / gw * W, fy = (my / sum + 0.5) / gh * H;
+    home.x += (clamp(fx, r0 * 1.5, W - r0 * 1.5) - home.x) * 0.25;
+    home.y += (clamp(fy, H * 0.3, H - r0 * 1.8) - home.y) * 0.25;
+  }
+
   function resetBall() {
-    ball.x = W / 2; ball.y = H * 0.58; ball.z = 2.4;
+    ball.x = home.x; ball.y = home.y; ball.z = 3.0;
     ball.vx = 0; ball.vy = 0; ball.vz = 0; ball.groundT = 0;
   }
 
@@ -225,7 +241,7 @@
     resetBall();
     for (var i = 0; i < heat.length; i++) heat[i] = 0;
     state = 'countdown';
-    countEnd = performance.now() + 3000;
+    countEnd = performance.now() + 4000;
     elOverlay.style.display = 'none';
     elCount.style.display = 'flex';
   }
@@ -233,9 +249,9 @@
   function kick(power, hitX, hitY, t) {
     var hard = 1 + Math.min(score, 30) / 30 * 0.6;
     var dx = clamp((ball.x - hitX) / r0, -1, 1), dy = clamp((ball.y - hitY) / r0, -1, 1);
-    ball.vx = (dx * W * 0.20 + rnd(W * 0.05)) * hard;
-    ball.vy = (dy * H * 0.10 + rnd(H * 0.035)) * hard;
-    ball.vz = 5.6 + clamp(power, 0, 1) * 1.6;
+    ball.vx = (dx * W * 0.07 + rnd(W * 0.025)) * hard;
+    ball.vy = (dy * H * 0.03 + rnd(H * 0.012)) * hard;
+    ball.vz = 3.9 + clamp(power, 0, 1) * 0.7;
     ball.z = Math.max(ball.z, 0.02);
     ball.groundT = 0;
     lastKickT = t; flash = 1;
@@ -263,17 +279,20 @@
       var left = countEnd - t;
       if (left <= 0) { elCount.style.display = 'none'; state = 'play'; }
       else elCount.textContent = String(Math.ceil(left / 1000));
+      if (camOn) { findFoot(); ball.x = home.x; ball.y = home.y; }
       return;
     }
     if (state !== 'play') return;
 
     ball.vz -= G * dt;
     ball.z += ball.vz * dt;
+    // gentle pull back toward the feet so the ball never wanders far
+    ball.vx += (home.x - ball.x) * 1.2 * dt; ball.vy += (home.y - ball.y) * 1.2 * dt;
     ball.x += ball.vx * dt; ball.y += ball.vy * dt;
     ball.spin += ball.vx * dt * 0.012;
 
     // keep the landing spot on screen
-    var mX = r0 * 1.3, top = H * 0.22, bot = H - r0 * 1.6;
+    var mX = r0 * 1.3, top = Math.max(H * 0.2, home.y - H * 0.2), bot = H - r0 * 1.6;
     if (ball.x < mX) { ball.x = mX; ball.vx = Math.abs(ball.vx) * 0.7; }
     if (ball.x > W - mX) { ball.x = W - mX; ball.vx = -Math.abs(ball.vx) * 0.7; }
     if (ball.y < top) { ball.y = top; ball.vy = Math.abs(ball.vy) * 0.7; }
@@ -286,7 +305,7 @@
 
     if (camOn && ball.vz <= 0 && ball.z < KICK_Z && t - lastKickT > 260) {
       var m = regionMotion(), th = SENS[sensIdx].t;
-      if (m.score > th) { kick((m.score - th) / 0.6, m.cx, m.cy, t); return; }
+      if (m.score > th) { kick((m.score - th) / 0.5, m.cx, m.cy, t); return; }
     }
     if (ball.groundT && t - ball.groundT > GRACE_MS) drop();
   }
@@ -321,11 +340,11 @@
     ctx.beginPath(); ctx.arc(ball.x, ball.y, r0 * 1.3, 0, Math.PI * 2); ctx.stroke();
     ctx.fillStyle = 'rgba(0,0,0,' + clamp(0.5 - zc * 0.12, 0.12, 0.5) + ')';
     ctx.beginPath();
-    ctx.ellipse(ball.x, ball.y, r0 * (1 - zc * 0.15), r0 * (1 - zc * 0.15) * 0.8, 0, 0, Math.PI * 2);
+    ctx.ellipse(ball.x, ball.y, r0 * 0.8 * (1 - zc * 0.15), r0 * 0.8 * (1 - zc * 0.15) * 0.8, 0, 0, Math.PI * 2);
     ctx.fill();
 
     // the ball: bigger = higher (closer to the phone)
-    var R = r0 * (1 + ball.z * 0.5), bx = ball.x, by = ball.y - ball.z * H * 0.045;
+    var R = r0 * 0.8 * (1 + ball.z * 0.4), bx = ball.x, by = ball.y - ball.z * H * 0.045;
     ctx.save();
     ctx.beginPath(); ctx.arc(bx, by, R, 0, Math.PI * 2); ctx.clip();
     var g = ctx.createRadialGradient(bx - R * 0.35, by - R * 0.4, R * 0.1, bx, by, R);
@@ -362,6 +381,11 @@
     update(dt, t);
     if (debug && gotVideo) drawDebug();
     if (state !== 'menu') drawBall();
+    if (state === 'countdown' && camOn) {
+      ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(0, H * 0.14, W, 40);
+      ctx.fillStyle = '#fff'; ctx.font = '600 17px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('Wiggle your kicking foot', W / 2, H * 0.14 + 26);
+    }
     flash = Math.max(0, flash - dt * 3);
     requestAnimationFrame(frame);
   }
